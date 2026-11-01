@@ -1,0 +1,124 @@
+# Portable template only. This managed connection cannot activate GitHub Actions.
+# Install in .github/workflows/ of an ordinary Actions-enabled repository.
+name: COSMOS CI and CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cosmos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify COSMOS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Syntax, routes and asset checks
+        run: npm run check
+      - name: Isolated regression tests
+        run: npm test
+      - name: Build static frontend
+        run: npm run build
+      - name: Credential-free server smoke checks
+        run: npm run smoke
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Save static build artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: cosmos-static-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  container:
+    name: Verify production container
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build without production secrets
+        run: docker build --build-arg COSMOS_RELEASE_SHA="$GITHUB_SHA" -t cosmos:test .
+      - name: Smoke-test production image without a database
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name cosmos-ci -p 127.0.0.1:3000:3000 cosmos:test
+          trap 'docker rm -f cosmos-ci >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3000/health > /tmp/cosmos-health.json; then
+              break
+            fi
+            sleep 1
+          done
+          python3 -c 'import json,os; d=json.load(open("/tmp/cosmos-health.json")); assert d["ok"] and d["database"] == "unconfigured" and d["revision"] == os.environ["GITHUB_SHA"]'
+
+  deploy:
+    name: Opt-in production deployment
+    needs: [verify, container]
+    # This opt-in must be a repository variable, not an untrusted PR input.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.COSMOS_CD_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: cosmos-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Validate target before publishing an image
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+          DEPLOY_HEALTH_URL: ${{ vars.DEPLOY_HEALTH_URL }}
+          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
+        run: node scripts/deploy.mjs --validate
+      - name: Publish the commit-tagged production image
+        id: image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          docker build --build-arg COSMOS_RELEASE_SHA="$GITHUB_SHA" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$IMAGE:sha-$GITHUB_SHA" .
+          docker push "$IMAGE:sha-$GITHUB_SHA"
+          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:sha-$GITHUB_SHA")"
+          printf 'digest=%s\n' "$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Notify a configured host and verify the exact revision
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+          DEPLOY_HEALTH_URL: ${{ vars.DEPLOY_HEALTH_URL }}
+          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
+          DEPLOY_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: node scripts/deploy.mjs
