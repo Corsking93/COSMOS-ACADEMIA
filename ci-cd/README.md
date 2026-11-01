@@ -1,8 +1,8 @@
-# COSMOS CI/CD — prepared templates, not active workflows
+# COSMOS CI/CD — CI definition installed, production held off
 
-The unused new-repository transfer was canceled in favor of a separate code sync to the user's existing `Corsking93/COSMOS-ACADEMIA` repository. The Manus website binding remains unchanged. No remote Actions run, container publication, or live deployment was performed. The template is deliberately stored in `ci-cd/github-actions/`, not `.github/workflows/`, so it cannot silently activate.
+The workflow definition is installed at `.github/workflows/cosmos.yml` in `Corsking93/COSMOS-ACADEMIA`. Committing it to main triggers automated CI. The reusable template remains in `ci-cd/github-actions/`. The Manus website binding is unchanged. A remote run's result must be checked separately; installation is not proof of a successful run or deployment.
 
-COSMOS's existing Manus checkpoint-based publication remains the current deployment mechanism. The managed repository connection does not support Actions. The separately synchronized ordinary GitHub repository can use the templates only after Actions and the necessary hosting configuration are deliberately enabled. No alternate repository or hosting service was created.
+Production deployment in the active workflow is explicitly disabled with `if: ${{ false }}`. GitHub returned HTTP 403 for deployment variable and secret metadata, so the current connection cannot verify a hosting target. Merely setting `COSMOS_CD_ENABLED=true` cannot bypass this hold. COSMOS's existing Manus checkpoint-based publication remains the current deployment mechanism. No alternate hosting service or live deployment has been activated.
 
 ## What is prepared
 
@@ -30,11 +30,11 @@ Docker checks require an installed Docker engine. The production image copies on
 
 ## Activation in a compatible repository
 
-Copy `ci-cd/github-actions/cosmos.yml` into `.github/workflows/cosmos.yml` in an ordinary Actions-enabled repository together with the updated package scripts, `scripts/`, tests, Dockerfile, and server health metadata. Keep the repository private and use GitHub-hosted runners rather than an untrusted persistent runner. Require the CI checks before merging where your repository plan supports branch protection.
+The current repository already has the active definition in `.github/workflows/cosmos.yml`. For another ordinary Actions-enabled repository, copy the portable template along with the package scripts, `scripts/`, tests, Dockerfile, and server health metadata. The current repository's public visibility was preserved; sensitive learner data and credentials must never be committed. Use GitHub-hosted runners rather than an untrusted persistent runner. Require the CI checks before merging where branch protection is available.
 
 CI needs no custom secrets. Review the first CI run before enabling deployment. The template references a `production` environment; configure that environment, restrict it to main, and add reviewers where supported. A YAML environment reference does not itself install approval rules. Required reviewers and private-repository environment features have plan restrictions, so verify your plan rather than assuming a private free repository has an approval gate. Do not make learner code or assets public merely to obtain that feature. [2]
 
-For deployment, configure the secret `DEPLOY_HOOK_URL`, the variable `DEPLOY_HEALTH_URL`, and optional secret `DEPLOY_BEARER_TOKEN` using GitHub's secure settings. These must belong to your approved hosting adapter. The adapter must understand the payload below, be able to pull the private GHCR image using its own scoped credentials, and deploy that exact digest. Only then set the repository variable `COSMOS_CD_ENABLED=true`. Leave it unset while authentication, privacy, hosting, or adapter setup is incomplete.
+For deployment, configure the secret `DEPLOY_HOOK_URL`, the variable `DEPLOY_HEALTH_URL`, and optional secret `DEPLOY_BEARER_TOKEN` using GitHub's secure settings. These must belong to your approved hosting adapter. The adapter must understand the payload below, be able to pull the private GHCR image using its own scoped credentials, and deploy that exact digest. After the target is verified, restore the template's guarded deployment condition in the active workflow and set the repository variable `COSMOS_CD_ENABLED=true`. Keep the literal-false hold while authentication, privacy, hosting, or adapter setup is incomplete.
 
 Do not put `OPENAI_API_KEY`, `DATABASE_URL`, camera images, or learner exports in Actions secrets or build inputs for this template. Runtime OpenAI/database credentials belong in the hosting provider's protected runtime configuration. Deployment secrets are separate from application runtime secrets.
 
